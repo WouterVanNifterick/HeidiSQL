@@ -6309,6 +6309,80 @@ var
     end;
   end;
 
+  procedure AddJoinSuggestion(const leftToken:string);
+    function RemoveDbName(const s:string):string;
+    begin
+      Result := s.Replace(Conn.Database+'.','');
+    end;
+    function FindInStr(const searchTable,entireQuery:string):Boolean;
+    var r:TRegExpr;
+    begin
+      r := TRegExpr.Create('[\s.`()](' + searchTable + ')[\s.`()]');
+      try
+        r.ModifierI := True;
+        result := r.Exec(entireQuery);
+      finally
+        r.Free;
+      end;
+    end;
+  var
+    tableName:String;
+    fk: TForeignKey;
+    Obj: TDBObject;
+    JoinStr:string;
+    isTableInQuery:Boolean;
+    relevantTables:TStringList;
+    SuggestionIndex: Integer;
+  begin
+    Conn.CacheAllForeignKeys;
+    DBObjects := Conn.GetDBObjects(Conn.Database);
+    relevantTables := TStringList.Create;
+    relevantTables.Duplicates := TDuplicates.dupIgnore;
+    SuggestionIndex := 0;
+
+    // foreign keys used in this table
+    for Obj in DBObjects do begin
+      if (Obj.NodeType in [lntTable]) then begin
+        if not FindInStr(Obj.Name, sql) then
+          Continue;
+
+        for fk in Obj.TableForeignKeys do
+        begin
+          relevantTables.Add(LowerCase(Obj.Database + '.' + Obj.Name));
+          JoinStr := Format('%s ON %s.%s = %s.%s ', [ fk.ReferenceTable, Obj.Name, fk.Columns[0], fk.ReferenceTable, fk.ForeignColumns[0] ]);
+          JoinStr := RemoveDbName(JoinStr);
+          // don't suggest if we see that the join is already there
+          if sql.ToLowerInvariant.Contains(JoinStr.ToLowerInvariant) then
+            continue;
+
+          Proposal.AddItemAt(SuggestionIndex, Format(SYNCOMPLETION_PATTERN, [-1, 'Join' , RemoveDbName(Obj.Name)+'.'+fk.Columns[0], ' -> '+ RemoveDbName(fk.ReferenceTable)+'.'+fk.ForeignColumns[0], '']), JoinStr);
+          Inc(SuggestionIndex);
+        end;
+      end;
+    end;
+
+    // foreign keys pointing to this table
+    for Obj in DBObjects do begin
+      if (Obj.NodeType in [lntTable]) then begin
+        for fk in Obj.TableForeignKeys do
+        begin
+          if relevantTables.IndexOf(fk.ReferenceTable.ToLowerInvariant) < 0 then
+            Continue;
+
+          JoinStr := Format('%s ON %s.%s = %s.%s ', [ Obj.Name, Obj.Name, fk.Columns[0], fk.ReferenceTable, fk.ForeignColumns[0] ]);
+          JoinStr := RemoveDbName(JoinStr);
+          // don't suggest if we see that the join is already there
+          if sql.ToLowerInvariant.Contains(JoinStr.ToLowerInvariant) then
+            continue;
+          Proposal.AddItemAt(SuggestionIndex, Format(SYNCOMPLETION_PATTERN, [-1, 'Join' , RemoveDbName(Obj.Name)+'.'+fk.Columns[0], ' <- '+ RemoveDbName(fk.ReferenceTable)+'.'+fk.ForeignColumns[0], '']), JoinStr);
+          Inc(SuggestionIndex);
+        end;
+      end;
+    end;
+  end;
+
+
+
 begin
   Proposal := Sender as TSynCompletionProposal;
   Proposal.ClearList;
@@ -6413,6 +6487,9 @@ begin
       AddColumns(Conn.QuoteIdent(Token1, False)+'.'+Conn.QuoteIdent(Token2, False))
     else if Token2 <> '' then
       AddColumns(Conn.QuoteIdent(Token2, False));
+
+    if Token.Trim.ToUpper='JOIN' then
+      AddJoinSuggestion(TableName);
 
     if Token1 = '' then begin
       i := Conn.AllDatabases.IndexOf(Token2);
