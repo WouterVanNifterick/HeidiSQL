@@ -526,6 +526,7 @@ type
       function GetTableColumns(Table: TDBObject): TTableColumnList; virtual;
       function GetTableKeys(Table: TDBObject): TTableKeyList; virtual;
       function GetTableForeignKeys(Table: TDBObject): TForeignKeyList; virtual;
+      procedure CacheAllForeignKeys; virtual;
     published
       property Active: Boolean read FActive write SetActive default False;
       property Database: String read FDatabase write SetDatabase;
@@ -4000,6 +4001,99 @@ begin
   Result := FAllDatabases;
 end;
 
+
+procedure TDBConnection.CacheAllForeignKeys;
+var
+  ForeignQuery, ColQuery: TDBQuery;
+  ForeignKey: TForeignKey;
+  Obj:TDBObject;
+  PrevObj:TDBObject;
+
+  function IsEverythingLoaded:Boolean;
+  var o:TDBObject;
+  begin
+    Result := True;
+    for o in GetDBObjects(Database) do
+      if o.NodeType = lntTable then
+        if not o.FTableForeignKeys.Loaded then
+          Exit(False)
+  end;
+
+begin
+  if FForeignKeyQueriesFailed then begin
+    Log(lcDebug, 'Avoid foreign key retrieval with queries which failed before');
+    Exit;
+  end;
+
+  if IsEverythingLoaded then
+    Exit;
+
+  try
+    // Combine two IS tables by hand, not by JOIN, as this is too slow. See #852
+    ForeignQuery := GetResults('SELECT *'+
+      ' FROM '+InfSch+'.REFERENTIAL_CONSTRAINTS'+
+      ' WHERE'+
+      '   CONSTRAINT_SCHEMA='+EscapeString(Database)+
+      '   AND REFERENCED_TABLE_NAME IS NOT NULL'
+      );
+    ColQuery := GetResults('SELECT *'+
+      ' FROM '+InfSch+'.KEY_COLUMN_USAGE'+
+      ' WHERE'+
+      '   CONSTRAINT_SCHEMA='+EscapeString(Database)+
+      '   AND REFERENCED_TABLE_NAME IS NOT NULL'
+      );
+
+    try
+      PrevObj := nil;
+      while not ForeignQuery.Eof do begin
+        // construct a Foreign Key object
+        ForeignKey := TForeignKey.Create(Self);
+        ForeignKey.KeyName := ForeignQuery.Col('CONSTRAINT_NAME');
+        ForeignKey.OldKeyName := ForeignKey.KeyName;
+        ForeignKey.ReferenceTable := ForeignQuery.Col('UNIQUE_CONSTRAINT_SCHEMA') +
+          '.' + ForeignQuery.Col('REFERENCED_TABLE_NAME');
+        ForeignKey.OnUpdate := ForeignQuery.Col('UPDATE_RULE');
+        ForeignKey.OnDelete := ForeignQuery.Col('DELETE_RULE');
+        while not ColQuery.Eof do begin
+          if ColQuery.Col('CONSTRAINT_NAME') = ForeignQuery.Col('CONSTRAINT_NAME') then begin
+            ForeignKey.Columns.Add(ColQuery.Col('COLUMN_NAME'));
+            ForeignKey.ForeignColumns.Add(ColQuery.Col('REFERENCED_COLUMN_NAME'));
+          end;
+          ColQuery.Next;
+        end;
+
+        // Assign it to the table object
+        Obj := FindObject(ForeignQuery.Col('UNIQUE_CONSTRAINT_SCHEMA'), ForeignQuery.Col('TABLE_NAME'));
+        if Assigned(Obj) then begin
+          if Obj<>PrevObj then
+            Obj.FTableForeignKeys.Clear;
+          Obj.FTableForeignKeys.Add(ForeignKey);
+        end;
+
+        ColQuery.First;
+        ForeignQuery.Next;
+      end;
+      ForeignQuery.Free;
+      ColQuery.Free;
+
+      // To make sure that we don't keep on fetching FK's for tables that don't
+      // have any, we set Loaded to true for all tables
+      for Obj in GetDBObjects(Database) do
+        if Obj.NodeType = lntTable then
+          Obj.FTableForeignKeys.Loaded := True;
+    except
+      // Don't silence errors here:
+      on E:EDbError do
+        Log(lcError, E.Message);
+    end;
+  except
+    // Silently ignore non existent IS tables and/or columns
+    // And remember to not fire such queries again here
+    on E:EDbError do begin
+      FForeignKeyQueriesFailed := True;
+    end;
+  end;
+end;
 
 function TMySQLConnection.GetAllDatabases: TStringList;
 begin
@@ -8911,8 +9005,6 @@ begin
   Result.Assign(FTableForeignKeys);
 end;
 
-
-
 { *** TTableColumn }
 
 constructor TTableColumn.Create(AOwner: TDBConnection; Serialized: String='');
@@ -9403,7 +9495,6 @@ end;
 procedure SQLite_CollationNeededCallback(userData: Pointer; ppDb:Psqlite3; eTextRep:integer; zName:PAnsiChar); cdecl;
 var
   Conn: TSQLiteConnection;
-  Lib: TSQLiteLib;
 begin
   // SQLite connection requests a yet non existing collation. Create it and show that in the log.
   // userData is a pointer to the connection object, see caller in SetActive()
