@@ -526,7 +526,8 @@ type
       function GetTableColumns(Table: TDBObject): TTableColumnList; virtual;
       function GetTableKeys(Table: TDBObject): TTableKeyList; virtual;
       function GetTableForeignKeys(Table: TDBObject): TForeignKeyList; virtual;
-      procedure CacheAllForeignKeys; virtual;
+      procedure CacheAllForeignKeys(Force:Boolean=false); virtual;
+      function AreAllForeignKeysLoaded: Boolean;
     published
       property Active: Boolean read FActive write SetActive default False;
       property Database: String read FDatabase write SetDatabase;
@@ -4002,31 +4003,21 @@ begin
 end;
 
 
-procedure TDBConnection.CacheAllForeignKeys;
+procedure TDBConnection.CacheAllForeignKeys(Force:Boolean);
 var
   ForeignQuery, ColQuery: TDBQuery;
   ForeignKey: TForeignKey;
   Obj:TDBObject;
   PrevObj:TDBObject;
-
-  function IsEverythingLoaded:Boolean;
-  var o:TDBObject;
-  begin
-    Result := True;
-    for o in GetDBObjects(Database) do
-      if o.NodeType = lntTable then
-        if not o.FTableForeignKeys.Loaded then
-          Exit(False)
-  end;
-
 begin
   if FForeignKeyQueriesFailed then begin
     Log(lcDebug, 'Avoid foreign key retrieval with queries which failed before');
     Exit;
   end;
 
-  if IsEverythingLoaded then
-    Exit;
+  if not Force then
+    if AreAllForeignKeysLoaded then
+      Exit;
 
   try
     // Combine two IS tables by hand, not by JOIN, as this is too slow. See #852
@@ -6715,6 +6706,16 @@ begin
 end;
 
 
+function TDBConnection.AreAllForeignKeysLoaded: Boolean;
+var Obj:TDBObject;
+begin
+  Result := True;
+  for Obj in GetDBObjects(Database) do
+    if Obj.NodeType = lntTable then
+      if not Obj.FTableForeignKeys.Loaded then
+        Exit(False)
+end;
+
 function TDBConnection.LikeClauseTail: String;
 begin
   case FParameters.NetTypeGroup of
@@ -9005,6 +9006,8 @@ begin
   Result.Assign(FTableForeignKeys);
 end;
 
+
+
 { *** TTableColumn }
 
 constructor TTableColumn.Create(AOwner: TDBConnection; Serialized: String='');
@@ -9495,6 +9498,7 @@ end;
 procedure SQLite_CollationNeededCallback(userData: Pointer; ppDb:Psqlite3; eTextRep:integer; zName:PAnsiChar); cdecl;
 var
   Conn: TSQLiteConnection;
+  Lib: TSQLiteLib;
 begin
   // SQLite connection requests a yet non existing collation. Create it and show that in the log.
   // userData is a pointer to the connection object, see caller in SetActive()
