@@ -6326,11 +6326,9 @@ var
       end;
     end;
   var
-    tableName:String;
     fk: TForeignKey;
     Obj: TDBObject;
     JoinStr:string;
-    isTableInQuery:Boolean;
     relevantTables:TStringList;
     SuggestionIndex: Integer;
   begin
@@ -6362,23 +6360,26 @@ var
     end;
 
     // foreign keys pointing to this table
-    for Obj in DBObjects do begin
-      if (Obj.NodeType in [lntTable]) then begin
-        for fk in Obj.TableForeignKeys do
-        begin
-          if relevantTables.IndexOf(fk.ReferenceTable.ToLowerInvariant) < 0 then
-            Continue;
+    // Because we'll request all foreign key info for all tables, this is slow
+    // if it's not cached. So only do this if the pre-caching worked out.
+    if Conn.AreAllForeignKeysLoaded then
+      for Obj in DBObjects do begin
+        if (Obj.NodeType in [lntTable]) then begin
+          for fk in Obj.TableForeignKeys do
+          begin
+            if relevantTables.IndexOf(fk.ReferenceTable.ToLowerInvariant) < 0 then
+              Continue;
 
-          JoinStr := Format('%s ON %s.%s = %s.%s ', [ Obj.Name, Obj.Name, fk.Columns[0], fk.ReferenceTable, fk.ForeignColumns[0] ]);
-          JoinStr := RemoveDbName(JoinStr);
-          // don't suggest if we see that the join is already there
-          if sql.ToLowerInvariant.Contains(JoinStr.ToLowerInvariant) then
-            continue;
-          Proposal.AddItemAt(SuggestionIndex, Format(SYNCOMPLETION_PATTERN, [-1, 'Join' , RemoveDbName(Obj.Name)+'.'+fk.Columns[0], ' <- '+ RemoveDbName(fk.ReferenceTable)+'.'+fk.ForeignColumns[0], '']), JoinStr);
-          Inc(SuggestionIndex);
+            JoinStr := Format('%s ON %s.%s = %s.%s ', [ Obj.Name, Obj.Name, fk.Columns[0], fk.ReferenceTable, fk.ForeignColumns[0] ]);
+            JoinStr := RemoveDbName(JoinStr);
+            // don't suggest if we see that the join is already there
+            if sql.ToLowerInvariant.Contains(JoinStr.ToLowerInvariant) then
+              continue;
+            Proposal.AddItemAt(SuggestionIndex, Format(SYNCOMPLETION_PATTERN, [-1, 'Join' , RemoveDbName(Obj.Name)+'.'+fk.Columns[0], ' <- '+ RemoveDbName(fk.ReferenceTable)+'.'+fk.ForeignColumns[0], '']), JoinStr);
+            Inc(SuggestionIndex);
+          end;
         end;
       end;
-    end;
   end;
 
 
